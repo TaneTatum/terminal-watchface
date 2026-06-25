@@ -1,0 +1,11 @@
+# Pebble build output
+build/
+.lock-waf_darwin_build
+
+# Non-primary platform preview GIFs (kept: preview_emery.gif)
+preview_aplite.gif
+preview_basalt.gif
+preview_chalk.gif
+preview_flint.gif
+preview_diorite.gif
+preview_gabbro.gif

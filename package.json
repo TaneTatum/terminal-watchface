@@ -1,0 +1,48 @@
+{
+  "name": "terminal-watchface",
+  "author": "Pebble Developer",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Terminal",
+    "uuid": "85d776dd-7bf0-4bd6-9a0e-65d30545eddd",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": ["emery"],
+    "watchapp": {
+      "watchface": true
+    },
+    "capabilities": ["location"],
+    "messageKeys": [
+      "TEMPERATURE",
+      "CONDITIONS",
+      "WIND",
+      "REQUEST_WEATHER"
+    ],
+    "resources": {
+      "media": [
+        {
+          "type": "font",
+          "name": "FONT_TERMINAL_36",
+          "file": "fonts/ShareTechMono-Regular.ttf",
+          "characterRegex": "[0-9: ]",
+          "compatibility": "2.7"
+        },
+        {
+          "type": "font",
+          "name": "FONT_TERMINAL_15",
+          "file": "fonts/ShareTechMono-Regular.ttf",
+          "compatibility": "2.7"
+        },
+        {
+          "type": "font",
+          "name": "FONT_TERMINAL_13",
+          "file": "fonts/ShareTechMono-Regular.ttf",
+          "compatibility": "2.7"
+        }
+      ]
+    }
+  }
+}

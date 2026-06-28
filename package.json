@@ -25,14 +25,14 @@
       "media": [
         {
           "type": "font",
-          "name": "FONT_TERMINAL_36",
+          "name": "FONT_TERMINAL_48",
           "file": "fonts/ShareTechMono-Regular.ttf",
           "characterRegex": "[0-9: ]",
           "compatibility": "2.7"
         },
         {
           "type": "font",
-          "name": "FONT_TERMINAL_15",
+          "name": "FONT_TERMINAL_18",
           "file": "fonts/ShareTechMono-Regular.ttf",
           "compatibility": "2.7"
         },

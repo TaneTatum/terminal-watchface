@@ -58,12 +58,18 @@ function getWeather() {
         catch(e) { console.log('JSON parse error'); return; }
 
         var cur = json.current;
-        var temp      = Math.round(cur.temperature_2m);
-        var wmoCode   = cur.weather_code;
-        var condition = WMO_CODES[wmoCode] || 'CLOUDY';
-        var windSpd   = Math.round(cur.wind_speed_10m);
-        var windDir   = degreesToCompass(cur.wind_direction_10m);
-        var windStr   = windSpd + ' ' + windDir;
+        if (!cur) { console.log('No current data in response'); return; }
+
+        var temp, wmoCode, condition, windSpd, windDir, windStr;
+        try {
+          temp      = Math.round(cur.temperature_2m);
+          wmoCode   = cur.weather_code;
+          console.log('WMO code: ' + wmoCode);
+          condition = WMO_CODES[wmoCode] || 'CLOUDY';
+          windSpd   = Math.round(cur.wind_speed_10m);
+          windDir   = degreesToCompass(cur.wind_direction_10m);
+          windStr   = windSpd + ' ' + windDir;
+        } catch(e) { console.log('Parse error: ' + e); return; }
 
         console.log('Temp: ' + temp + 'F, Cond: ' + condition + ', Wind: ' + windStr);
 

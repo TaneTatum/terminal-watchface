@@ -33,35 +33,41 @@
 #define BATT_TXT_X   128
 #define BATT_TXT_W    40
 
-// Clock  (FONT_36 renders glyphs ~44 px tall on emery)
+// Clock  (FONT_48 renders glyphs ~58 px tall on emery)
 #define CLOCK_X      MARGIN
-#define CLOCK_Y      44
+#define CLOCK_Y      36
 #define CLOCK_W      CONTENT_W
-#define CLOCK_H      50
+#define CLOCK_H      58
 
-// Cursor block placed after "HH:MM" (~5 chars × ~21 px each = ~105 px)
-// Adjust CURSOR_X if the font renders at a different width
-#define CURSOR_X    (MARGIN + 108)
+// Cursor block placed after "HH:MM" (~5 chars × ~30 px each = ~150 px)
+#define CURSOR_X    (MARGIN + 150)
 #define CURSOR_Y    (CLOCK_Y + 6)
-#define CURSOR_W      8
-#define CURSOR_H     32
+#define CURSOR_W     10
+#define CURSOR_H     42
 
-// Log lines (FONT_15)
+// Log lines (FONT_18)
 #define LOG_X       MARGIN
 #define LOG_W       CONTENT_W
-#define LOG_H        20
-#define LOG1_Y      116
-#define LOG2_Y      140
-#define LOG3_Y      164
+#define LOG_H        24
+#define LOG1_Y      106
+#define LOG2_Y      132
+#define LOG3_Y      158
 
 // Prompt line
-#define PROMPT_Y    196
-#define PROMPT_H     20
+#define PROMPT_Y    186
+#define PROMPT_H     24
+
+// ── Animation ─────────────────────────────────────────────────────────
+#define ANIM_INTERVAL_MS   50
+#define SCROLL_STEP        44
+#define TYPE_STEP           2
+
+typedef enum { ANIM_IDLE, ANIM_SCROLL_OUT, ANIM_TYPE_IN } AnimPhase;
 
 // ── State ─────────────────────────────────────────────────────────────
 static Window *s_win;
 static Layer  *s_root;
-static GFont   s_f36, s_f15, s_f13;
+static GFont   s_f48, s_f18, s_f13;
 
 static char s_time[6]  = "--:--";
 static char s_date[24] = "> --- -- ---";
@@ -70,7 +76,31 @@ static char s_wind[24] = "> WIND: ----";
 static int  s_batt     = 100;
 static bool s_blink_on = true;
 
-// ── Drawing ───────────────────────────────────────────────────────────
+static AnimPhase   s_anim_phase  = ANIM_IDLE;
+static int         s_scroll_off  = 0;
+static int         s_type_chars  = 0;
+static int         s_type_total  = 0;
+static AppTimer   *s_anim_timer  = NULL;
+
+// Pending buffers (hold next values until scroll completes)
+static char s_next_time[6];
+static char s_next_date[24];
+
+// ── Drawing helpers ───────────────────────────────────────────────────
+static void draw_partial(GContext *ctx, const char *str, GFont font,
+                         GRect rect, int reveal) {
+  if (reveal <= 0) return;
+  static char buf[32];
+  int len = (int)strlen(str);
+  int n = reveal < len ? reveal : len;
+  // Advance past any UTF-8 continuation bytes at the cut point
+  while (n < len && (str[n] & 0xC0) == 0x80) n++;
+  strncpy(buf, str, n);
+  buf[n] = '\0';
+  graphics_draw_text(ctx, buf, font, rect,
+                     GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+}
+
 static void draw_battery(GContext *ctx) {
   // Body outline
   graphics_context_set_stroke_color(ctx, C_DIM);
@@ -128,62 +158,143 @@ static void draw(Layer *l, GContext *ctx) {
   graphics_context_set_stroke_color(ctx, C_DIM);
   graphics_draw_line(ctx, GPoint(MARGIN, DIVIDER_Y), GPoint(188, DIVIDER_Y));
 
-  // 6. Clock
+  // 6. Content — phase-aware
   graphics_context_set_text_color(ctx, C_HOT);
-  graphics_draw_text(ctx, s_time, s_f36,
-    GRect(CLOCK_X, CLOCK_Y, CLOCK_W, CLOCK_H),
-    GTextOverflowModeFill, GTextAlignmentLeft, NULL);
 
-  // 7. Cursor block (blinks)
+  if (s_anim_phase == ANIM_SCROLL_OUT) {
+    // Scroll existing content upward off-screen
+    int off = s_scroll_off;
+    if (CLOCK_Y - off >= DIVIDER_Y)
+      graphics_draw_text(ctx, s_time, s_f48,
+        GRect(CLOCK_X, CLOCK_Y - off, CLOCK_W, CLOCK_H),
+        GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+    if (LOG1_Y - off >= DIVIDER_Y)
+      graphics_draw_text(ctx, s_wx, s_f18,
+        GRect(LOG_X, LOG1_Y - off, LOG_W, LOG_H),
+        GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+    if (LOG2_Y - off >= DIVIDER_Y)
+      graphics_draw_text(ctx, s_wind, s_f18,
+        GRect(LOG_X, LOG2_Y - off, LOG_W, LOG_H),
+        GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+    if (LOG3_Y - off >= DIVIDER_Y)
+      graphics_draw_text(ctx, s_date, s_f18,
+        GRect(LOG_X, LOG3_Y - off, LOG_W, LOG_H),
+        GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+    if (PROMPT_Y - off >= DIVIDER_Y)
+      graphics_draw_text(ctx, "> _", s_f18,
+        GRect(LOG_X, PROMPT_Y - off, LOG_W, PROMPT_H),
+        GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+    // No cursor during scroll-out
+
+  } else if (s_anim_phase == ANIM_TYPE_IN) {
+    // Reveal new content character by character
+    int rem = s_type_chars;
+    draw_partial(ctx, s_time,  s_f48,
+                 GRect(CLOCK_X, CLOCK_Y, CLOCK_W, CLOCK_H), rem);
+    rem -= (int)strlen(s_time);
+    draw_partial(ctx, s_wx,   s_f18,
+                 GRect(LOG_X, LOG1_Y, LOG_W, LOG_H), rem);
+    rem -= (int)strlen(s_wx);
+    draw_partial(ctx, s_wind, s_f18,
+                 GRect(LOG_X, LOG2_Y, LOG_W, LOG_H), rem);
+    rem -= (int)strlen(s_wind);
+    draw_partial(ctx, s_date, s_f18,
+                 GRect(LOG_X, LOG3_Y, LOG_W, LOG_H), rem);
+    rem -= (int)strlen(s_date);
+    draw_partial(ctx, "> _",  s_f18,
+                 GRect(LOG_X, PROMPT_Y, LOG_W, PROMPT_H), rem);
+    // No cursor during type-in
+
+  } else {
+    // ANIM_IDLE — normal drawing
+    graphics_draw_text(ctx, s_time, s_f48,
+      GRect(CLOCK_X, CLOCK_Y, CLOCK_W, CLOCK_H),
+      GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+
+    // Cursor block (blinks)
 #if BLINK
-  if (s_blink_on) {
+    if (s_blink_on) {
+      graphics_context_set_fill_color(ctx, C_HOT);
+      graphics_fill_rect(ctx,
+        GRect(CURSOR_X, CURSOR_Y, CURSOR_W, CURSOR_H),
+        0, GCornerNone);
+    }
+#else
     graphics_context_set_fill_color(ctx, C_HOT);
     graphics_fill_rect(ctx,
       GRect(CURSOR_X, CURSOR_Y, CURSOR_W, CURSOR_H),
       0, GCornerNone);
-  }
-#else
-  graphics_context_set_fill_color(ctx, C_HOT);
-  graphics_fill_rect(ctx,
-    GRect(CURSOR_X, CURSOR_Y, CURSOR_W, CURSOR_H),
-    0, GCornerNone);
 #endif
 
-  // 8. Log lines (weather, wind, date)
-  graphics_context_set_text_color(ctx, C_HOT);
-  graphics_draw_text(ctx, s_wx, s_f15,
-    GRect(LOG_X, LOG1_Y, LOG_W, LOG_H),
-    GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-  graphics_draw_text(ctx, s_wind, s_f15,
-    GRect(LOG_X, LOG2_Y, LOG_W, LOG_H),
-    GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-  graphics_draw_text(ctx, s_date, s_f15,
-    GRect(LOG_X, LOG3_Y, LOG_W, LOG_H),
-    GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+    graphics_context_set_text_color(ctx, C_HOT);
+    graphics_draw_text(ctx, s_wx, s_f18,
+      GRect(LOG_X, LOG1_Y, LOG_W, LOG_H),
+      GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+    graphics_draw_text(ctx, s_wind, s_f18,
+      GRect(LOG_X, LOG2_Y, LOG_W, LOG_H),
+      GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+    graphics_draw_text(ctx, s_date, s_f18,
+      GRect(LOG_X, LOG3_Y, LOG_W, LOG_H),
+      GTextOverflowModeFill, GTextAlignmentLeft, NULL);
 
-  // 9. Prompt line
-  graphics_draw_text(ctx,
+    // Prompt line
+    graphics_draw_text(ctx,
 #if BLINK
-    s_blink_on ? "> _" : ">  ",
+      s_blink_on ? "> _" : ">  ",
 #else
-    "> _",
+      "> _",
 #endif
-    s_f15,
-    GRect(LOG_X, PROMPT_Y, LOG_W, PROMPT_H),
-    GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+      s_f18,
+      GRect(LOG_X, PROMPT_Y, LOG_W, PROMPT_H),
+      GTextOverflowModeFill, GTextAlignmentLeft, NULL);
+  }
+}
+
+// ── Animation callback ─────────────────────────────────────────────────
+static void anim_cb(void *ctx) {
+  s_anim_timer = NULL;
+
+  if (s_anim_phase == ANIM_SCROLL_OUT) {
+    s_scroll_off += SCROLL_STEP;
+    if (s_scroll_off >= 200) {
+      // Copy pending buffers into active buffers
+      strncpy(s_time, s_next_time, sizeof(s_time));
+      s_time[sizeof(s_time) - 1] = '\0';
+      strncpy(s_date, s_next_date, sizeof(s_date));
+      s_date[sizeof(s_date) - 1] = '\0';
+      // Compute total chars to reveal (s_wx and s_wind updated live from inbox)
+      s_type_total = (int)strlen(s_time) + (int)strlen(s_wx) +
+                     (int)strlen(s_wind) + (int)strlen(s_date) + 3; // "> _"
+      s_type_chars = 0;
+      s_anim_phase = ANIM_TYPE_IN;
+    }
+    layer_mark_dirty(s_root);
+    s_anim_timer = app_timer_register(ANIM_INTERVAL_MS, anim_cb, NULL);
+
+  } else if (s_anim_phase == ANIM_TYPE_IN) {
+    s_type_chars += TYPE_STEP;
+    if (s_type_chars >= s_type_total) {
+      s_type_chars = s_type_total;
+      s_anim_phase = ANIM_IDLE;
+      layer_mark_dirty(s_root);
+      // Don't re-register — animation complete
+    } else {
+      layer_mark_dirty(s_root);
+      s_anim_timer = app_timer_register(ANIM_INTERVAL_MS, anim_cb, NULL);
+    }
+  }
 }
 
 // ── Tick handler ──────────────────────────────────────────────────────
 static void tick_handler(struct tm *t, TimeUnits u) {
-  // Update time string
-  strftime(s_time, sizeof(s_time),
+  // Write new values into pending buffers
+  strftime(s_next_time, sizeof(s_next_time),
     clock_is_24h_style() ? "%H:%M" : "%I:%M", t);
 
-  // Update date string: "WED 24 JUN"
   char tmp[20];
   strftime(tmp, sizeof(tmp), "%a %d %b", t);
   for (int i = 0; tmp[i]; i++) tmp[i] = (char)toupper((unsigned char)tmp[i]);
-  snprintf(s_date, sizeof(s_date), "> %s", tmp);
+  snprintf(s_next_date, sizeof(s_next_date), "> %s", tmp);
 
   // Request weather refresh every 30 min
   if (t->tm_min % 30 == 0) {
@@ -195,7 +306,15 @@ static void tick_handler(struct tm *t, TimeUnits u) {
     }
   }
 
-  layer_mark_dirty(s_root);
+  // Cancel any in-progress animation and start scroll-out
+  if (s_anim_timer) {
+    app_timer_cancel(s_anim_timer);
+    s_anim_timer = NULL;
+  }
+  s_anim_phase = ANIM_SCROLL_OUT;
+  s_scroll_off = 0;
+  s_anim_timer = app_timer_register(ANIM_INTERVAL_MS, anim_cb, NULL);
+  // anim_cb calls layer_mark_dirty — no call needed here
 }
 
 // ── Blink timer ───────────────────────────────────────────────────────
@@ -220,8 +339,8 @@ static void inbox_received_callback(DictionaryIterator *it, void *ctx) {
   Tuple *wind  = dict_find(it, MESSAGE_KEY_WIND);
 
   if (temp && cond) {
-    snprintf(s_wx, sizeof(s_wx), "> %s %dF",
-             cond->value->cstring, (int)temp->value->int32);
+    snprintf(s_wx, sizeof(s_wx), "> %d\xc2\xb0""F %s",
+             (int)temp->value->int32, cond->value->cstring);
   }
   if (wind) {
     snprintf(s_wind, sizeof(s_wind), "> WIND: %s", wind->value->cstring);
@@ -244,8 +363,8 @@ static void window_load(Window *win) {
   GRect bounds = layer_get_bounds(wl);
 
   // Load custom fonts
-  s_f36 = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_TERMINAL_36));
-  s_f15 = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_TERMINAL_15));
+  s_f48 = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_TERMINAL_48));
+  s_f18 = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_TERMINAL_18));
   s_f13 = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_TERMINAL_13));
 
   // Single root drawing layer
@@ -253,18 +372,23 @@ static void window_load(Window *win) {
   layer_set_update_proc(s_root, draw);
   layer_add_child(wl, s_root);
 
-  // Seed time + date immediately
+  // Seed time + date immediately (direct write — no animation on first load)
   time_t now = time(NULL);
   struct tm *t = localtime(&now);
-  tick_handler(t, MINUTE_UNIT);
-
-  // Battery seeded via battery_handler callback registered in init()
+  strftime(s_time, sizeof(s_time),
+    clock_is_24h_style() ? "%H:%M" : "%I:%M", t);
+  char tmp[20];
+  strftime(tmp, sizeof(tmp), "%a %d %b", t);
+  for (int i = 0; tmp[i]; i++) tmp[i] = (char)toupper((unsigned char)tmp[i]);
+  snprintf(s_date, sizeof(s_date), "> %s", tmp);
+  layer_mark_dirty(s_root);
 }
 
 static void window_unload(Window *win) {
+  if (s_anim_timer) { app_timer_cancel(s_anim_timer); s_anim_timer = NULL; }
   layer_destroy(s_root);
-  fonts_unload_custom_font(s_f36);
-  fonts_unload_custom_font(s_f15);
+  fonts_unload_custom_font(s_f48);
+  fonts_unload_custom_font(s_f18);
   fonts_unload_custom_font(s_f13);
 }
 

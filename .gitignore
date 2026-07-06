@@ -9,3 +9,6 @@ preview_chalk.gif
 preview_flint.gif
 preview_diorite.gif
 preview_gabbro.gif
+
+node_modules/
+package-lock.json

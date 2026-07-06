@@ -1,6 +1,10 @@
 // Terminal Watchface — PebbleKit JS
 // Weather via Open-Meteo API (free, no key required)
 
+var Clay = require('@rebble/clay');
+var clayConfig = require('./config');
+var clay = new Clay(clayConfig);
+
 var WMO_CODES = {
   0:  'CLEAR',
   1:  'PCLOUDY', 2: 'PCLOUDY', 3: 'CLOUDY',

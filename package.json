@@ -4,7 +4,9 @@
   "version": "1.1.0",
   "keywords": ["pebble-app"],
   "private": true,
-  "dependencies": {},
+  "dependencies": {
+    "@rebble/clay": "^1.0.10"
+  },
   "pebble": {
     "displayName": "Terminal",
     "uuid": "85d776dd-7bf0-4bd6-9a0e-65d30545eddd",
@@ -14,12 +16,16 @@
     "watchapp": {
       "watchface": true
     },
-    "capabilities": ["location"],
+    "capabilities": ["location", "configurable"],
     "messageKeys": [
       "TEMPERATURE",
       "CONDITIONS",
       "WIND",
-      "REQUEST_WEATHER"
+      "REQUEST_WEATHER",
+      "SETTINGS_SCANLINES",
+      "SETTINGS_CLOCK_CURSOR",
+      "SETTINGS_PROMPT_CURSOR",
+      "SETTINGS_COLOR_SCHEME"
     ],
     "resources": {
       "media": [

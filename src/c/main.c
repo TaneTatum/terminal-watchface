@@ -1,15 +1,11 @@
 #include <pebble.h>
 #include <ctype.h>
 
-// ── Feature toggles ──────────────────────────────────────────────────
-#define SCANLINES 1   // CRT scanline overlay (every 4 rows)
-#define BLINK     1   // blinking cursor + prompt underscore
-
 // ── Colour palette ───────────────────────────────────────────────────
-#define C_BG   GColorBlack           // #000000 – background
-#define C_HOT  GColorMediumAquamarine // #55FFAA – primary phosphor
-#define C_DIM  GColorIslamicGreen    // #00AA00 – dim phosphor / labels
-#define C_SCAN GColorDarkGreen       // #005500 – scanlines
+#define C_BG GColorBlack   // background never changes
+static GColor s_c_hot;     // primary phosphor (theme-dependent)
+static GColor s_c_dim;     // dim phosphor / labels
+static GColor s_c_scan;    // scanlines
 
 // ── Layout constants (emery 200 × 228) ───────────────────────────────
 #define MARGIN       12
@@ -25,7 +21,6 @@
 #define BATT_BODY_H   9
 #define BATT_NUB_W    2
 #define BATT_NUB_H    5
-// Right edge of nub at x=188; body right edge at x=186
 #define BATT_X      (188 - BATT_BODY_W)   // = 170
 #define BATT_Y       10
 
@@ -64,6 +59,18 @@
 
 typedef enum { ANIM_IDLE, ANIM_SCROLL_OUT, ANIM_TYPE_IN } AnimPhase;
 
+// ── Settings ──────────────────────────────────────────────────────────
+#define SETTINGS_KEY 1
+
+typedef struct {
+  bool   scanlines;
+  bool   clock_cursor;
+  bool   prompt_cursor;
+  int8_t color_scheme;  // 0=green, 1=amber, 2=cyan, 3=white
+} ClaySettings;
+
+static ClaySettings s_settings;
+
 // ── State ─────────────────────────────────────────────────────────────
 static Window *s_win;
 static Layer  *s_root;
@@ -86,6 +93,49 @@ static AppTimer   *s_anim_timer  = NULL;
 static char s_next_time[6];
 static char s_next_date[24];
 
+// ── Settings functions ────────────────────────────────────────────────
+static void prv_apply_settings(void) {
+  switch (s_settings.color_scheme) {
+    case 1:  // Amber phosphor
+      s_c_hot  = GColorOrange;
+      s_c_dim  = GColorWindsorTan;
+      s_c_scan = GColorBulgarianRose;
+      break;
+    case 2:  // Cyan
+      s_c_hot  = GColorCyan;
+      s_c_dim  = GColorTiffanyBlue;
+      s_c_scan = GColorMidnightGreen;
+      break;
+    case 3:  // White
+      s_c_hot  = GColorWhite;
+      s_c_dim  = GColorLightGray;
+      s_c_scan = GColorDarkGray;
+      break;
+    default:  // 0 = Green phosphor (default)
+      s_c_hot  = GColorMediumAquamarine;
+      s_c_dim  = GColorIslamicGreen;
+      s_c_scan = GColorDarkGreen;
+      break;
+  }
+}
+
+static void prv_default_settings(void) {
+  s_settings.scanlines     = true;
+  s_settings.clock_cursor  = true;
+  s_settings.prompt_cursor = true;
+  s_settings.color_scheme  = 0;
+}
+
+static void prv_load_settings(void) {
+  prv_default_settings();
+  persist_read_data(SETTINGS_KEY, &s_settings, sizeof(s_settings));
+  prv_apply_settings();
+}
+
+static void prv_save_settings(void) {
+  persist_write_data(SETTINGS_KEY, &s_settings, sizeof(s_settings));
+}
+
 // ── Drawing helpers ───────────────────────────────────────────────────
 static void draw_partial(GContext *ctx, const char *str, GFont font,
                          GRect rect, int reveal) {
@@ -103,11 +153,11 @@ static void draw_partial(GContext *ctx, const char *str, GFont font,
 
 static void draw_battery(GContext *ctx) {
   // Body outline
-  graphics_context_set_stroke_color(ctx, C_DIM);
+  graphics_context_set_stroke_color(ctx, s_c_dim);
   graphics_draw_round_rect(ctx, GRect(BATT_X, BATT_Y, BATT_BODY_W, BATT_BODY_H), 1);
 
   // Nub (positive terminal on right)
-  graphics_context_set_fill_color(ctx, C_DIM);
+  graphics_context_set_fill_color(ctx, s_c_dim);
   graphics_fill_rect(ctx,
     GRect(BATT_X + BATT_BODY_W, BATT_Y + 2, BATT_NUB_W, BATT_NUB_H),
     0, GCornerNone);
@@ -116,7 +166,7 @@ static void draw_battery(GContext *ctx) {
   int inner_w = BATT_BODY_W - 4;
   int fill_w  = (s_batt * inner_w) / 100;
   if (fill_w < 1) fill_w = 1;
-  graphics_context_set_fill_color(ctx, C_HOT);
+  graphics_context_set_fill_color(ctx, s_c_hot);
   graphics_fill_rect(ctx,
     GRect(BATT_X + 2, BATT_Y + 2, fill_w, BATT_BODY_H - 4),
     0, GCornerNone);
@@ -124,7 +174,7 @@ static void draw_battery(GContext *ctx) {
   // Percentage text to the left of the icon
   static char batt_buf[8];
   snprintf(batt_buf, sizeof(batt_buf), "%d%%", s_batt);
-  graphics_context_set_text_color(ctx, C_HOT);
+  graphics_context_set_text_color(ctx, s_c_hot);
   graphics_draw_text(ctx, batt_buf, s_f13,
     GRect(BATT_TXT_X, STATUS_Y, BATT_TXT_W, STATUS_H),
     GTextOverflowModeFill, GTextAlignmentRight, NULL);
@@ -137,16 +187,15 @@ static void draw(Layer *l, GContext *ctx) {
   graphics_context_set_fill_color(ctx, C_BG);
   graphics_fill_rect(ctx, b, 0, GCornerNone);
 
-  // 2. Scanlines (CRT effect)
-#if SCANLINES
-  graphics_context_set_stroke_color(ctx, C_SCAN);
-  for (int y = 0; y < b.size.h; y += 4) {
-    graphics_draw_line(ctx, GPoint(0, y), GPoint(b.size.w, y));
+  // 2. Scanlines (CRT effect — runtime toggle)
+  if (s_settings.scanlines) {
+    graphics_context_set_stroke_color(ctx, s_c_scan);
+    for (int y = 0; y < b.size.h; y += 4)
+      graphics_draw_line(ctx, GPoint(0, y), GPoint(b.size.w, y));
   }
-#endif
 
   // 3. Status bar — "PEB://TIME2"
-  graphics_context_set_text_color(ctx, C_HOT);
+  graphics_context_set_text_color(ctx, s_c_hot);
   graphics_draw_text(ctx, "PEB://TIME2", s_f13,
     GRect(MARGIN, STATUS_Y, 120, STATUS_H),
     GTextOverflowModeFill, GTextAlignmentLeft, NULL);
@@ -155,11 +204,11 @@ static void draw(Layer *l, GContext *ctx) {
   draw_battery(ctx);
 
   // 5. Divider line
-  graphics_context_set_stroke_color(ctx, C_DIM);
+  graphics_context_set_stroke_color(ctx, s_c_dim);
   graphics_draw_line(ctx, GPoint(MARGIN, DIVIDER_Y), GPoint(188, DIVIDER_Y));
 
   // 6. Content — phase-aware
-  graphics_context_set_text_color(ctx, C_HOT);
+  graphics_context_set_text_color(ctx, s_c_hot);
 
   if (s_anim_phase == ANIM_SCROLL_OUT) {
     // Scroll existing content upward off-screen
@@ -211,22 +260,15 @@ static void draw(Layer *l, GContext *ctx) {
       GRect(CLOCK_X, CLOCK_Y, CLOCK_W, CLOCK_H),
       GTextOverflowModeFill, GTextAlignmentLeft, NULL);
 
-    // Cursor block (blinks)
-#if BLINK
-    if (s_blink_on) {
-      graphics_context_set_fill_color(ctx, C_HOT);
+    // Clock cursor (runtime toggle + blink)
+    if (s_settings.clock_cursor && s_blink_on) {
+      graphics_context_set_fill_color(ctx, s_c_hot);
       graphics_fill_rect(ctx,
         GRect(CURSOR_X, CURSOR_Y, CURSOR_W, CURSOR_H),
         0, GCornerNone);
     }
-#else
-    graphics_context_set_fill_color(ctx, C_HOT);
-    graphics_fill_rect(ctx,
-      GRect(CURSOR_X, CURSOR_Y, CURSOR_W, CURSOR_H),
-      0, GCornerNone);
-#endif
 
-    graphics_context_set_text_color(ctx, C_HOT);
+    graphics_context_set_text_color(ctx, s_c_hot);
     graphics_draw_text(ctx, s_wx, s_f18,
       GRect(LOG_X, LOG1_Y, LOG_W, LOG_H),
       GTextOverflowModeFill, GTextAlignmentLeft, NULL);
@@ -237,14 +279,9 @@ static void draw(Layer *l, GContext *ctx) {
       GRect(LOG_X, LOG3_Y, LOG_W, LOG_H),
       GTextOverflowModeFill, GTextAlignmentLeft, NULL);
 
-    // Prompt line
-    graphics_draw_text(ctx,
-#if BLINK
-      s_blink_on ? "> _" : ">  ",
-#else
-      "> _",
-#endif
-      s_f18,
+    // Prompt cursor (runtime toggle + blink)
+    const char *prompt = (s_settings.prompt_cursor && s_blink_on) ? "> _" : ">  ";
+    graphics_draw_text(ctx, prompt, s_f18,
       GRect(LOG_X, PROMPT_Y, LOG_W, PROMPT_H),
       GTextOverflowModeFill, GTextAlignmentLeft, NULL);
   }
@@ -314,17 +351,14 @@ static void tick_handler(struct tm *t, TimeUnits u) {
   s_anim_phase = ANIM_SCROLL_OUT;
   s_scroll_off = 0;
   s_anim_timer = app_timer_register(ANIM_INTERVAL_MS, anim_cb, NULL);
-  // anim_cb calls layer_mark_dirty — no call needed here
 }
 
 // ── Blink timer ───────────────────────────────────────────────────────
-#if BLINK
 static void blink_cb(void *ctx) {
   s_blink_on = !s_blink_on;
   layer_mark_dirty(s_root);
   app_timer_register(530, blink_cb, NULL);
 }
-#endif
 
 // ── Battery service ───────────────────────────────────────────────────
 static void battery_handler(BatteryChargeState state) {
@@ -334,6 +368,7 @@ static void battery_handler(BatteryChargeState state) {
 
 // ── AppMessage inbox ──────────────────────────────────────────────────
 static void inbox_received_callback(DictionaryIterator *it, void *ctx) {
+  // Weather
   Tuple *temp  = dict_find(it, MESSAGE_KEY_TEMPERATURE);
   Tuple *cond  = dict_find(it, MESSAGE_KEY_CONDITIONS);
   Tuple *wind  = dict_find(it, MESSAGE_KEY_WIND);
@@ -345,6 +380,24 @@ static void inbox_received_callback(DictionaryIterator *it, void *ctx) {
   if (wind) {
     snprintf(s_wind, sizeof(s_wind), "> WIND: %s", wind->value->cstring);
   }
+
+  // Settings
+  Tuple *t_scanlines     = dict_find(it, MESSAGE_KEY_SETTINGS_SCANLINES);
+  Tuple *t_clock_cursor  = dict_find(it, MESSAGE_KEY_SETTINGS_CLOCK_CURSOR);
+  Tuple *t_prompt_cursor = dict_find(it, MESSAGE_KEY_SETTINGS_PROMPT_CURSOR);
+  Tuple *t_color_scheme  = dict_find(it, MESSAGE_KEY_SETTINGS_COLOR_SCHEME);
+
+  bool settings_changed = false;
+  if (t_scanlines)     { s_settings.scanlines     = t_scanlines->value->int32 != 0;       settings_changed = true; }
+  if (t_clock_cursor)  { s_settings.clock_cursor  = t_clock_cursor->value->int32 != 0;    settings_changed = true; }
+  if (t_prompt_cursor) { s_settings.prompt_cursor = t_prompt_cursor->value->int32 != 0;   settings_changed = true; }
+  if (t_color_scheme)  { s_settings.color_scheme  = (int8_t)t_color_scheme->value->int32; settings_changed = true; }
+
+  if (settings_changed) {
+    prv_apply_settings();
+    prv_save_settings();
+  }
+
   layer_mark_dirty(s_root);
 }
 
@@ -359,6 +412,8 @@ static void outbox_failed_callback(DictionaryIterator *it,
 
 // ── Window lifecycle ──────────────────────────────────────────────────
 static void window_load(Window *win) {
+  prv_load_settings();
+
   Layer *wl = window_get_root_layer(win);
   GRect bounds = layer_get_bounds(wl);
 
@@ -410,12 +465,10 @@ static void init(void) {
   app_message_register_inbox_received(inbox_received_callback);
   app_message_register_inbox_dropped(inbox_dropped_callback);
   app_message_register_outbox_failed(outbox_failed_callback);
-  app_message_open(256, 64);
+  app_message_open(512, 64);
 
   // Blink timer
-#if BLINK
   app_timer_register(530, blink_cb, NULL);
-#endif
 }
 
 static void deinit(void) {

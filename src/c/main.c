@@ -391,7 +391,13 @@ static void inbox_received_callback(DictionaryIterator *it, void *ctx) {
   if (t_scanlines)     { s_settings.scanlines     = t_scanlines->value->int32 != 0;       settings_changed = true; }
   if (t_clock_cursor)  { s_settings.clock_cursor  = t_clock_cursor->value->int32 != 0;    settings_changed = true; }
   if (t_prompt_cursor) { s_settings.prompt_cursor = t_prompt_cursor->value->int32 != 0;   settings_changed = true; }
-  if (t_color_scheme)  { s_settings.color_scheme  = (int8_t)t_color_scheme->value->int32; settings_changed = true; }
+  if (t_color_scheme) {
+    // Clay sends radiogroup values as CSTRING ("0"–"3"); parse with atoi
+    s_settings.color_scheme = (t_color_scheme->type == TUPLE_CSTRING)
+      ? (int8_t)atoi(t_color_scheme->value->cstring)
+      : (int8_t)t_color_scheme->value->int32;
+    settings_changed = true;
+  }
 
   if (settings_changed) {
     prv_apply_settings();

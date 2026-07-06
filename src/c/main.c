@@ -413,6 +413,7 @@ static void outbox_failed_callback(DictionaryIterator *it,
 // ── Window lifecycle ──────────────────────────────────────────────────
 static void window_load(Window *win) {
   prv_load_settings();
+  s_batt = (int)battery_state_service_peek().charge_percent;
 
   Layer *wl = window_get_root_layer(win);
   GRect bounds = layer_get_bounds(wl);

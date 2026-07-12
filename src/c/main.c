@@ -67,6 +67,10 @@ typedef struct {
   bool   clock_cursor;
   bool   prompt_cursor;
   int8_t color_scheme;  // 0=green, 1=amber, 2=cyan, 3=white
+  int8_t line1;         // 0=wx, 1=wind, 2=date, 3=steps, 4=hr, 5=bt, 6=phone_batt
+  int8_t line2;
+  int8_t line3;
+  int8_t units;         // 0=imperial (°F/mph), 1=metric (°C/km/h)
 } ClaySettings;
 
 static ClaySettings s_settings;
@@ -76,12 +80,17 @@ static Window *s_win;
 static Layer  *s_root;
 static GFont   s_f48, s_f18, s_f13;
 
-static char s_time[6]  = "--:--";
-static char s_date[24] = "> --- -- ---";
-static char s_wx[28]   = "> SYNC...";
-static char s_wind[24] = "> WIND: ----";
-static int  s_batt     = 100;
-static bool s_blink_on = true;
+static char s_time[6]       = "--:--";
+static char s_date[24]      = "> --- -- ---";
+static char s_wx[28]        = "> SYNC...";
+static char s_wind[24]      = "> WIND: ----";
+static char s_steps[24]     = "> STEPS: ----";
+static char s_hr[24]        = "> HR: --";
+static char s_bt[20]        = "> BT: ----";
+static char s_phone_batt[20]= "> PHONE: --%";
+static int  s_batt          = 100;
+static bool s_blink_on      = true;
+static bool s_bt_connected  = false;
 
 static AnimPhase   s_anim_phase  = ANIM_IDLE;
 static int         s_scroll_off  = 0;
@@ -124,6 +133,10 @@ static void prv_default_settings(void) {
   s_settings.clock_cursor  = true;
   s_settings.prompt_cursor = true;
   s_settings.color_scheme  = 0;
+  s_settings.line1         = 0;  // weather
+  s_settings.line2         = 1;  // wind
+  s_settings.line3         = 2;  // date
+  s_settings.units         = 0;  // imperial
 }
 
 static void prv_load_settings(void) {
@@ -151,6 +164,55 @@ static void draw_partial(GContext *ctx, const char *str, GFont font,
                      GTextOverflowModeFill, GTextAlignmentLeft, NULL);
 }
 
+// ── AppMessage helpers ────────────────────────────────────────────────
+static int8_t tuple_to_int8(Tuple *t) {
+  return (t->type == TUPLE_CSTRING)
+    ? (int8_t)atoi(t->value->cstring)
+    : (int8_t)t->value->int32;
+}
+
+// ── Line content selection ────────────────────────────────────────────
+static const char* line_content(int8_t type) {
+  switch (type) {
+    case 1: return s_wind;
+    case 2: return s_date;
+    case 3: return s_steps;
+    case 4: return s_hr;
+    case 5: return s_bt;
+    case 6: return s_phone_batt;
+    default: return s_wx;
+  }
+}
+
+// ── Bluetooth service ─────────────────────────────────────────────────
+static void update_bt_string(void) {
+  snprintf(s_bt, sizeof(s_bt), "> BT: %s", s_bt_connected ? "LINKED" : "LOST");
+}
+
+static void bt_handler(bool connected) {
+  s_bt_connected = connected;
+  update_bt_string();
+  layer_mark_dirty(s_root);
+}
+
+// ── Health service ─────────────────────────────────────────────────────
+static void update_health(void) {
+  HealthValue steps = health_service_sum_today(HealthMetricStepCount);
+  snprintf(s_steps, sizeof(s_steps), "> STEPS: %d", (int)steps);
+  HealthValue hr = health_service_peek_current_value(HealthMetricHeartRateBPM);
+  if (hr > 0) {
+    snprintf(s_hr, sizeof(s_hr), "> HR: %d", (int)hr);
+  } else {
+    snprintf(s_hr, sizeof(s_hr), "> HR: --");
+  }
+}
+
+static void health_handler(HealthEventType event, void *context) {
+  update_health();
+  layer_mark_dirty(s_root);
+}
+
+// ── Battery draw ──────────────────────────────────────────────────────
 static void draw_battery(GContext *ctx) {
   // Body outline
   graphics_context_set_stroke_color(ctx, s_c_dim);
@@ -218,15 +280,15 @@ static void draw(Layer *l, GContext *ctx) {
         GRect(CLOCK_X, CLOCK_Y - off, CLOCK_W, CLOCK_H),
         GTextOverflowModeFill, GTextAlignmentLeft, NULL);
     if (LOG1_Y - off >= DIVIDER_Y)
-      graphics_draw_text(ctx, s_wx, s_f18,
+      graphics_draw_text(ctx, line_content(s_settings.line1), s_f18,
         GRect(LOG_X, LOG1_Y - off, LOG_W, LOG_H),
         GTextOverflowModeFill, GTextAlignmentLeft, NULL);
     if (LOG2_Y - off >= DIVIDER_Y)
-      graphics_draw_text(ctx, s_wind, s_f18,
+      graphics_draw_text(ctx, line_content(s_settings.line2), s_f18,
         GRect(LOG_X, LOG2_Y - off, LOG_W, LOG_H),
         GTextOverflowModeFill, GTextAlignmentLeft, NULL);
     if (LOG3_Y - off >= DIVIDER_Y)
-      graphics_draw_text(ctx, s_date, s_f18,
+      graphics_draw_text(ctx, line_content(s_settings.line3), s_f18,
         GRect(LOG_X, LOG3_Y - off, LOG_W, LOG_H),
         GTextOverflowModeFill, GTextAlignmentLeft, NULL);
     if (PROMPT_Y - off >= DIVIDER_Y)
@@ -237,19 +299,22 @@ static void draw(Layer *l, GContext *ctx) {
 
   } else if (s_anim_phase == ANIM_TYPE_IN) {
     // Reveal new content character by character
+    const char *l1 = line_content(s_settings.line1);
+    const char *l2 = line_content(s_settings.line2);
+    const char *l3 = line_content(s_settings.line3);
     int rem = s_type_chars;
-    draw_partial(ctx, s_time,  s_f48,
+    draw_partial(ctx, s_time, s_f48,
                  GRect(CLOCK_X, CLOCK_Y, CLOCK_W, CLOCK_H), rem);
     rem -= (int)strlen(s_time);
-    draw_partial(ctx, s_wx,   s_f18,
+    draw_partial(ctx, l1, s_f18,
                  GRect(LOG_X, LOG1_Y, LOG_W, LOG_H), rem);
-    rem -= (int)strlen(s_wx);
-    draw_partial(ctx, s_wind, s_f18,
+    rem -= (int)strlen(l1);
+    draw_partial(ctx, l2, s_f18,
                  GRect(LOG_X, LOG2_Y, LOG_W, LOG_H), rem);
-    rem -= (int)strlen(s_wind);
-    draw_partial(ctx, s_date, s_f18,
+    rem -= (int)strlen(l2);
+    draw_partial(ctx, l3, s_f18,
                  GRect(LOG_X, LOG3_Y, LOG_W, LOG_H), rem);
-    rem -= (int)strlen(s_date);
+    rem -= (int)strlen(l3);
     draw_partial(ctx, "> _",  s_f18,
                  GRect(LOG_X, PROMPT_Y, LOG_W, PROMPT_H), rem);
     // No cursor during type-in
@@ -269,13 +334,13 @@ static void draw(Layer *l, GContext *ctx) {
     }
 
     graphics_context_set_text_color(ctx, s_c_hot);
-    graphics_draw_text(ctx, s_wx, s_f18,
+    graphics_draw_text(ctx, line_content(s_settings.line1), s_f18,
       GRect(LOG_X, LOG1_Y, LOG_W, LOG_H),
       GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-    graphics_draw_text(ctx, s_wind, s_f18,
+    graphics_draw_text(ctx, line_content(s_settings.line2), s_f18,
       GRect(LOG_X, LOG2_Y, LOG_W, LOG_H),
       GTextOverflowModeFill, GTextAlignmentLeft, NULL);
-    graphics_draw_text(ctx, s_date, s_f18,
+    graphics_draw_text(ctx, line_content(s_settings.line3), s_f18,
       GRect(LOG_X, LOG3_Y, LOG_W, LOG_H),
       GTextOverflowModeFill, GTextAlignmentLeft, NULL);
 
@@ -299,9 +364,12 @@ static void anim_cb(void *ctx) {
       s_time[sizeof(s_time) - 1] = '\0';
       strncpy(s_date, s_next_date, sizeof(s_date));
       s_date[sizeof(s_date) - 1] = '\0';
-      // Compute total chars to reveal (s_wx and s_wind updated live from inbox)
-      s_type_total = (int)strlen(s_time) + (int)strlen(s_wx) +
-                     (int)strlen(s_wind) + (int)strlen(s_date) + 3; // "> _"
+      // Compute total chars to reveal (weather/wind/health updated live from services)
+      s_type_total = (int)strlen(s_time)
+                   + (int)strlen(line_content(s_settings.line1))
+                   + (int)strlen(line_content(s_settings.line2))
+                   + (int)strlen(line_content(s_settings.line3))
+                   + 3; // "> _"
       s_type_chars = 0;
       s_anim_phase = ANIM_TYPE_IN;
     }
@@ -333,12 +401,13 @@ static void tick_handler(struct tm *t, TimeUnits u) {
   for (int i = 0; tmp[i]; i++) tmp[i] = (char)toupper((unsigned char)tmp[i]);
   snprintf(s_next_date, sizeof(s_next_date), "> %s", tmp);
 
-  // Request weather refresh every 30 min
+  // Request weather refresh every 30 min; include current units setting
   if (t->tm_min % 30 == 0) {
     DictionaryIterator *iter;
     AppMessageResult result = app_message_outbox_begin(&iter);
     if (result == APP_MSG_OK) {
       dict_write_uint8(iter, MESSAGE_KEY_REQUEST_WEATHER, 1);
+      dict_write_uint8(iter, MESSAGE_KEY_SETTINGS_UNITS, (uint8_t)s_settings.units);
       app_message_outbox_send();
     }
   }
@@ -374,11 +443,19 @@ static void inbox_received_callback(DictionaryIterator *it, void *ctx) {
   Tuple *wind  = dict_find(it, MESSAGE_KEY_WIND);
 
   if (temp && cond) {
-    snprintf(s_wx, sizeof(s_wx), "> %d\xc2\xb0""F %s",
-             (int)temp->value->int32, cond->value->cstring);
+    const char *deg = (s_settings.units == 1) ? "\xc2\xb0""C" : "\xc2\xb0""F";
+    snprintf(s_wx, sizeof(s_wx), "> %d%s %s",
+             (int)temp->value->int32, deg, cond->value->cstring);
   }
   if (wind) {
     snprintf(s_wind, sizeof(s_wind), "> WIND: %s", wind->value->cstring);
+  }
+
+  // Phone battery
+  Tuple *t_pbatt = dict_find(it, MESSAGE_KEY_PHONE_BATTERY);
+  if (t_pbatt) {
+    snprintf(s_phone_batt, sizeof(s_phone_batt), "> PHONE: %d%%",
+             (int)t_pbatt->value->int32);
   }
 
   // Settings
@@ -386,17 +463,34 @@ static void inbox_received_callback(DictionaryIterator *it, void *ctx) {
   Tuple *t_clock_cursor  = dict_find(it, MESSAGE_KEY_SETTINGS_CLOCK_CURSOR);
   Tuple *t_prompt_cursor = dict_find(it, MESSAGE_KEY_SETTINGS_PROMPT_CURSOR);
   Tuple *t_color_scheme  = dict_find(it, MESSAGE_KEY_SETTINGS_COLOR_SCHEME);
+  Tuple *t_line1         = dict_find(it, MESSAGE_KEY_SETTINGS_LINE1);
+  Tuple *t_line2         = dict_find(it, MESSAGE_KEY_SETTINGS_LINE2);
+  Tuple *t_line3         = dict_find(it, MESSAGE_KEY_SETTINGS_LINE3);
+  Tuple *t_units         = dict_find(it, MESSAGE_KEY_SETTINGS_UNITS);
 
   bool settings_changed = false;
-  if (t_scanlines)     { s_settings.scanlines     = t_scanlines->value->int32 != 0;       settings_changed = true; }
-  if (t_clock_cursor)  { s_settings.clock_cursor  = t_clock_cursor->value->int32 != 0;    settings_changed = true; }
-  if (t_prompt_cursor) { s_settings.prompt_cursor = t_prompt_cursor->value->int32 != 0;   settings_changed = true; }
-  if (t_color_scheme) {
-    // Clay sends radiogroup values as CSTRING ("0"–"3"); parse with atoi
-    s_settings.color_scheme = (t_color_scheme->type == TUPLE_CSTRING)
-      ? (int8_t)atoi(t_color_scheme->value->cstring)
-      : (int8_t)t_color_scheme->value->int32;
+  if (t_scanlines)     { s_settings.scanlines     = t_scanlines->value->int32 != 0;    settings_changed = true; }
+  if (t_clock_cursor)  { s_settings.clock_cursor  = t_clock_cursor->value->int32 != 0; settings_changed = true; }
+  if (t_prompt_cursor) { s_settings.prompt_cursor = t_prompt_cursor->value->int32 != 0;settings_changed = true; }
+  if (t_color_scheme)  { s_settings.color_scheme  = tuple_to_int8(t_color_scheme);     settings_changed = true; }
+  if (t_line1)         { s_settings.line1         = tuple_to_int8(t_line1);            settings_changed = true; }
+  if (t_line2)         { s_settings.line2         = tuple_to_int8(t_line2);            settings_changed = true; }
+  if (t_line3)         { s_settings.line3         = tuple_to_int8(t_line3);            settings_changed = true; }
+
+  if (t_units) {
+    int8_t new_units = tuple_to_int8(t_units);
+    bool units_changed = (new_units != s_settings.units);
+    s_settings.units = new_units;
     settings_changed = true;
+    if (units_changed) {
+      // Re-fetch weather in the newly selected unit system
+      DictionaryIterator *outbox;
+      if (app_message_outbox_begin(&outbox) == APP_MSG_OK) {
+        dict_write_uint8(outbox, MESSAGE_KEY_REQUEST_WEATHER, 1);
+        dict_write_uint8(outbox, MESSAGE_KEY_SETTINGS_UNITS, (uint8_t)new_units);
+        app_message_outbox_send();
+      }
+    }
   }
 
   if (settings_changed) {
@@ -443,6 +537,12 @@ static void window_load(Window *win) {
   strftime(tmp, sizeof(tmp), "%a %d %b", t);
   for (int i = 0; tmp[i]; i++) tmp[i] = (char)toupper((unsigned char)tmp[i]);
   snprintf(s_date, sizeof(s_date), "> %s", tmp);
+
+  // Seed bluetooth + health
+  s_bt_connected = bluetooth_connection_service_peek();
+  update_bt_string();
+  update_health();
+
   layer_mark_dirty(s_root);
 }
 
@@ -467,6 +567,8 @@ static void init(void) {
   // Services
   tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
   battery_state_service_subscribe(battery_handler);
+  bluetooth_connection_service_subscribe(bt_handler);
+  health_service_events_subscribe(health_handler, NULL);
 
   // AppMessage — register before open
   app_message_register_inbox_received(inbox_received_callback);
@@ -481,6 +583,8 @@ static void init(void) {
 static void deinit(void) {
   tick_timer_service_unsubscribe();
   battery_state_service_unsubscribe();
+  bluetooth_connection_service_unsubscribe();
+  health_service_events_unsubscribe();
   window_destroy(s_win);
 }
 

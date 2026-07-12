@@ -5,6 +5,9 @@ var Clay = require('@rebble/clay');
 var clayConfig = require('./config');
 var clay = new Clay(clayConfig);
 
+// 0 = imperial (°F, mph), 1 = metric (°C, km/h)
+var s_units = parseInt(localStorage.getItem('SETTINGS_UNITS') || '0');
+
 var WMO_CODES = {
   0:  'CLEAR',
   1:  'PCLOUDY', 2: 'PCLOUDY', 3: 'CLOUDY',
@@ -40,14 +43,16 @@ function xhrRequest(url, type, callback) {
 }
 
 function getWeather() {
+  var metric = (s_units === 1);
   navigator.geolocation.getCurrentPosition(
     function(pos) {
       var url = 'https://api.open-meteo.com/v1/forecast' +
         '?latitude='  + pos.coords.latitude.toFixed(4) +
         '&longitude=' + pos.coords.longitude.toFixed(4) +
         '&current=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m' +
-        '&temperature_unit=fahrenheit' +
-        '&wind_speed_unit=mph';
+        (metric
+          ? '&temperature_unit=celsius&wind_speed_unit=kmh'
+          : '&temperature_unit=fahrenheit&wind_speed_unit=mph');
 
       console.log('Fetching: ' + url);
 
@@ -72,10 +77,10 @@ function getWeather() {
           condition = WMO_CODES[wmoCode] || 'CLOUDY';
           windSpd   = Math.round(cur.wind_speed_10m);
           windDir   = degreesToCompass(cur.wind_direction_10m);
-          windStr   = windSpd + ' ' + windDir;
+          windStr   = windSpd + (metric ? 'km/h' : 'mph') + ' ' + windDir;
         } catch(e) { console.log('Parse error: ' + e); return; }
 
-        console.log('Temp: ' + temp + 'F, Cond: ' + condition + ', Wind: ' + windStr);
+        console.log('Temp: ' + temp + ', Cond: ' + condition + ', Wind: ' + windStr);
 
         var dictionary = {
           'TEMPERATURE': temp,
@@ -96,14 +101,30 @@ function getWeather() {
   );
 }
 
+function sendPhoneBattery() {
+  if (navigator.getBattery) {
+    navigator.getBattery().then(function(b) {
+      Pebble.sendAppMessage({'PHONE_BATTERY': Math.round(b.level * 100)},
+        function() { console.log('Phone battery sent'); },
+        function(e) { console.log('Phone batt send failed: ' + e); });
+    }).catch(function(e) { console.log('Battery API error: ' + e); });
+  }
+}
+
 Pebble.addEventListener('ready', function() {
   console.log('Terminal watchface JS ready');
   getWeather();
+  sendPhoneBattery();
 });
 
 Pebble.addEventListener('appmessage', function(e) {
   if (e.payload['REQUEST_WEATHER']) {
     console.log('Weather refresh requested');
+    if (e.payload['SETTINGS_UNITS'] !== undefined) {
+      s_units = e.payload['SETTINGS_UNITS'];
+      localStorage.setItem('SETTINGS_UNITS', String(s_units));
+    }
     getWeather();
+    sendPhoneBattery();
   }
 });

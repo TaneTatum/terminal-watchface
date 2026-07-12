@@ -1,7 +1,7 @@
 {
   "name": "terminal-watchface",
   "author": "Pebble Developer",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "keywords": ["pebble-app"],
   "private": true,
   "dependencies": {
@@ -16,7 +16,7 @@
     "watchapp": {
       "watchface": true
     },
-    "capabilities": ["location", "configurable"],
+    "capabilities": ["location", "configurable", "health"],
     "messageKeys": [
       "TEMPERATURE",
       "CONDITIONS",
@@ -25,7 +25,20 @@
       "SETTINGS_SCANLINES",
       "SETTINGS_CLOCK_CURSOR",
       "SETTINGS_PROMPT_CURSOR",
-      "SETTINGS_COLOR_SCHEME"
+      "SETTINGS_COLOR_SCHEME",
+      "SETTINGS_LINE1",
+      "SETTINGS_LINE2",
+      "SETTINGS_LINE3",
+      "SETTINGS_UNITS",
+      "PHONE_BATTERY"
+    ],
+    "publishedMedia": [
+      {
+        "type": "screenshot",
+        "friendlyName": "Main",
+        "file": "screenshot_emery.png",
+        "platforms": ["emery"]
+      }
     ],
     "resources": {
       "media": [
